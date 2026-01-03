@@ -56,6 +56,22 @@ router.get("/dashboard", async (req, res) => {
   const mode = await redis.get("wingo:admin:mode");
   res.json({ state, violetCount, mode });
 });
+
+// Current round snapshot
+router.get("/round/current", async (req, res) => {
+  try {
+    const currentKey = await redis.get("wingo:round:current");
+    if (!currentKey) {
+      return res.status(404).json({ error: "No active round" });
+    }
+
+    const state = await redis.hgetall(currentKey);
+    res.json({ roundId: currentKey.split(":")[2], state });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Audit trail for a round
 router.get("/audit/:roundId", async (req, res) => {
   const round = await Round.findOne({ roundId: req.params.roundId });
