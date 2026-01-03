@@ -1,4 +1,3 @@
-// src/services/betting.js
 import crypto from "crypto";
 import redis from "../config/redis.js";
 import Wallet from "../models/Wallet.js";
@@ -20,15 +19,17 @@ export async function placeBet({ userId, roundId, bets }) {
   // Calculate totals
   const grossTotal = bets.reduce((s, b) => s + Number(b.amount), 0);
   const feeTotal = +(grossTotal * 0.02).toFixed(2);
+  const totalDebit = grossTotal + feeTotal;
 
   // Wallet check
   const wallet = await Wallet.findOne({ userId });
-  if (!wallet || wallet.available < grossTotal) {
+  if (!wallet || wallet.available < totalDebit) {
     throw new Error("Insufficient balance");
   }
 
-  // Deduct funds immediately
-  wallet.available -= grossTotal;
+  // Deduct funds immediately (bet + fee)
+  wallet.available -= totalDebit;
+  wallet.locked += grossTotal; // optional: lock bet amount until round resolves
   await wallet.save();
 
   // Ledger entries
