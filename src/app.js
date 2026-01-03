@@ -7,8 +7,10 @@ import authRoutes from "./routes/authRoutes.js";
 import walletRoutes from "./routes/walletRoutes.js";
 import adminAuthRoutes from "./routes/adminAuthRoutes.js";
 
-
 const app = express();
+
+app.use(cors());
+
 app.use(express.json());
 app.use("/api", betRoutes);
 app.use("/admin", adminRoutes);
