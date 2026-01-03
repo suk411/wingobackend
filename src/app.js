@@ -6,7 +6,7 @@ import healthRoutes from "./routes/healthRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import walletRoutes from "./routes/walletRoutes.js";
 import adminAuthRoutes from "./routes/adminAuthRoutes.js";
-
+import cors from "cors";
 const app = express();
 
 app.use(cors());
