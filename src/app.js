@@ -6,13 +6,14 @@ import healthRoutes from "./routes/healthRoutes.js";
 import authRoutes from "./routes/authRoutes.js";
 import walletRoutes from "./routes/walletRoutes.js";
 import adminAuthRoutes from "./routes/adminAuthRoutes.js";
+import userRoutes from "./routes/userRoutes.js";
 import cors from "cors";
 const app = express();
 
 app.use(cors());
 
 app.use(express.json());
-app.use("/api", betRoutes);
+app.use("/api", userRoutes);
 app.use("/admin", adminRoutes);
 app.use("/health", healthRoutes);
 app.use("/auth", authRoutes);
