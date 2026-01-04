@@ -1,8 +1,8 @@
-// src/routes/adminRoutes.js
 import { Router } from "express";
 import redis from "../config/redis.js";
 import Round from "../models/Round.js";
 import Bet from "../models/Bet.js";
+import Ledger from "../models/Ledger.js"; // ✅ added
 import { selectResult } from "../services/resultEngine.js";
 
 const router = Router();
@@ -65,7 +65,6 @@ router.get("/round/current", async (req, res) => {
     if (!currentKey) {
       return res.status(404).json({ error: "No active round" });
     }
-
     const state = await redis.hgetall(currentKey);
     res.json({ roundId: currentKey.split(":")[2], state });
   } catch (err) {
@@ -79,38 +78,79 @@ router.get("/audit/:roundId", async (req, res) => {
   if (!round) return res.status(404).json({ error: "Round not found" });
   res.json(round);
 });
-// ✅ Paginated rounds list
+
+// ✅ Paginated rounds list with totals
 router.get("/rounds", async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = 10;
     const skip = (page - 1) * limit;
+
     const rounds = await Round.find({})
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
+
+    const enrichedRounds = await Promise.all(
+      rounds.map(async (round) => {
+        const bets = await Bet.find({ roundId: round.roundId });
+        const totalBets = bets.reduce((sum, b) => sum + b.amount, 0);
+
+        const credits = await Ledger.find({
+          roundId: round.roundId,
+          type: "CREDIT",
+        });
+        const totalPayout = credits.reduce((sum, l) => sum + l.amount, 0);
+
+        const fees = await Ledger.find({ roundId: round.roundId, type: "FEE" });
+        const totalFees = fees.reduce((sum, l) => sum + l.amount, 0);
+
+        const profit = totalBets - totalPayout + totalFees;
+
+        return {
+          ...round.toObject(),
+          totalBets,
+          totalPayout,
+          totalFees,
+          profit,
+        };
+      })
+    );
+
     const total = await Round.countDocuments();
     const totalPages = Math.ceil(total / limit);
-    res.json({ page, totalPages, totalRounds: total, rounds });
+
+    res.json({
+      page,
+      totalPages,
+      totalRounds: total,
+      rounds: enrichedRounds,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-}); // ✅ Bet list by userId
+});
+
+// ✅ Bet list by userId with pagination
 router.get("/bets/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const page = parseInt(req.query.page) || 1;
     const limit = 10;
     const skip = (page - 1) * limit;
+
     const bets = await Bet.find({ userId })
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
+
     const total = await Bet.countDocuments({ userId });
     const totalPages = Math.ceil(total / limit);
+
     res.json({ userId, page, totalPages, totalBets: total, bets });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
 export default router;
