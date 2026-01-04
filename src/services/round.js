@@ -22,7 +22,7 @@ export async function closeRound(roundId, result) {
   await round.save();
 
   // Settle bets
-  await settleRound(roundId, result.color || result.number || result.size);
+  await settleRound(roundId, result);
 
   round.status = "SETTLED";
   await round.save();
