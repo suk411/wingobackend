@@ -18,46 +18,34 @@ export async function placeBet({ userId, roundId, bets }) {
 
   // Calculate totals
   const grossTotal = bets.reduce((s, b) => s + Number(b.amount), 0);
-  const feeTotal = +(grossTotal * 0.02).toFixed(2);
-  const totalDebit = grossTotal + feeTotal;
 
   // Wallet check
   const wallet = await Wallet.findOne({ userId });
-  if (!wallet || wallet.available < totalDebit) {
+  if (!wallet || wallet.balance < grossTotal) {
     throw new Error("Insufficient balance");
   }
 
-  // Deduct funds immediately (bet + fee)
-  wallet.available -= totalDebit;
-  wallet.locked += grossTotal; // optional: lock bet amount until round resolves
+  // Deduct funds immediately (only bet amount)
+  wallet.balance -= grossTotal;
+  wallet.locked += grossTotal; // lock bet until round resolves
   await wallet.save();
 
-  // Ledger entries
-  await Ledger.create([
-    {
-      userId,
-      roundId,
-      type: "DEBIT",
-      amount: grossTotal,
-      balanceAfter: wallet.available,
-      meta: { bets },
-    },
-    {
-      userId,
-      roundId,
-      type: "FEE",
-      amount: feeTotal,
-      balanceAfter: wallet.available,
-      meta: {},
-    },
-  ]);
+  // Ledger entry for bet
+  await Ledger.create({
+    userId,
+    roundId,
+    type: "DEBIT",
+    amount: grossTotal,
+    balanceAfter: wallet.balance,
+    meta: { bets },
+  });
 
   // Save bets + update Redis exposures
   const betBaseId = crypto.randomUUID();
   const betDocs = [];
 
   for (const [idx, b] of bets.entries()) {
-    const netAmount = +(b.amount * 0.98).toFixed(2);
+    const netAmount = +(b.amount * 0.98).toFixed(2); // fee applied later
     const betId = `${betBaseId}-${idx}`;
 
     const betDoc = {
@@ -68,7 +56,7 @@ export async function placeBet({ userId, roundId, bets }) {
       option: b.option,
       amount: b.amount,
       netAmount,
-      status: "COMMITTED",
+      status: "PENDING",
     };
     betDocs.push(betDoc);
 

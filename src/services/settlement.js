@@ -1,86 +1,75 @@
-// src/services/settlement.js
-import redis from "../config/redis.js";
 import Wallet from "../models/Wallet.js";
 import Ledger from "../models/Ledger.js";
 import Bet from "../models/Bet.js";
-import Round from "../models/Round.js";
 
-export async function settleRound(roundId) {
-  const resultKey = `wingo:round:${roundId}:result`;
-  const resultRaw = await redis.get(resultKey);
-  if (!resultRaw) throw new Error("No result frozen");
-
-  const result = JSON.parse(resultRaw);
-
-  // Fetch all bets
-  const betList = await redis.lrange(`wingo:round:${roundId}:bets`, 0, -1);
-  const bets = betList.map((b) => JSON.parse(b));
-
-  const settlements = [];
+export async function settleRound(roundId, result) {
+  const bets = await Bet.find({ roundId, status: "PENDING" });
 
   for (const bet of bets) {
-    let win = false;
-    let multiplier = 0;
+    const wallet = await Wallet.findOne({ userId: bet.userId });
+    if (!wallet) continue;
 
-    if (bet.type === "COLOR" && bet.option === result.color) {
-      win = true;
-      multiplier = 2.0;
-    } else if (bet.type === "SIZE" && bet.option === result.size) {
-      win = true;
-      multiplier = 2.0;
-    } else if (bet.type === "NUMBER" && Number(bet.option) === result.number) {
-      win = true;
-      multiplier = 9.0;
-    } else if (bet.type === "VIOLET" && result.includesViolet) {
-      win = true;
-      multiplier = 4.5;
+    let payout = 0;
+    const netAmount = +(bet.amount * 0.98).toFixed(2); // apply fee only at payout
+
+    // Apply Wingo rules
+    if (bet.type === "COLOR") {
+      if (bet.option.toLowerCase() === result) {
+        payout = netAmount * 2;
+        bet.status = "WON";
+      } else if (
+        (bet.option.toLowerCase() === "red" ||
+          bet.option.toLowerCase() === "green") &&
+        result === "violet"
+      ) {
+        payout = netAmount * 1.5; // partial win
+        bet.status = "WON";
+      } else {
+        bet.status = "LOST";
+      }
+    } else if (bet.type === "SIZE") {
+      if (bet.option.toLowerCase() === result) {
+        payout = netAmount * 2;
+        bet.status = "WON";
+      } else {
+        bet.status = "LOST";
+      }
+    } else if (bet.type === "NUMBER") {
+      if (String(bet.option) === String(result)) {
+        payout = netAmount * 9;
+        bet.status = "WON";
+      } else {
+        bet.status = "LOST";
+      }
+    } else if (bet.type === "VIOLET") {
+      if (result === "violet") {
+        payout = netAmount * 4.5;
+        bet.status = "WON";
+      } else {
+        bet.status = "LOST";
+      }
     }
 
-    if (win) {
-      const payout = +(bet.netAmount * multiplier).toFixed(2);
-
-      // Credit wallet
-      const wallet = await Wallet.findOne({ userId: bet.userId });
-      wallet.available += payout;
+    // Credit wallet if won
+    if (payout > 0) {
+      wallet.balance += payout;
+      wallet.locked -= bet.amount;
       await wallet.save();
 
-      // Ledger entry
       await Ledger.create({
         userId: bet.userId,
         roundId,
         type: "CREDIT",
         amount: payout,
-        balanceAfter: wallet.available,
-        meta: { betId: bet.betId },
+        balanceAfter: wallet.balance,
+        meta: { betId: bet._id, result },
       });
-
-      settlements.push({ betId: bet.betId, payout });
     } else {
-      settlements.push({ betId: bet.betId, payout: 0 });
+      // Lost bet: release locked funds only
+      wallet.locked -= bet.amount;
+      await wallet.save();
     }
+
+    await bet.save();
   }
-
-  // Persist round summary
-  await Round.create({
-    roundId,
-    result,
-    bets,
-    settlements,
-  });
-
-  // Update counters
-  await redis.incr("wingo:counters:round:count");
-  if (result.includesViolet) await redis.incr("wingo:counters:violet:count");
-
-  // Cleanup Redis
-  await redis.del(
-    `wingo:round:${roundId}:bets`,
-    `wingo:round:${roundId}:exposure:color`,
-    `wingo:round:${roundId}:exposure:size`,
-    `wingo:round:${roundId}:exposure:number`,
-    `wingo:round:${roundId}:state`
-  );
-
-  console.log("✅ Settlement complete:", roundId);
-  return settlements;
 }

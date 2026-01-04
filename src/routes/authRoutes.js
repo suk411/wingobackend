@@ -2,6 +2,7 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
 
+import Wallet from "../models/Wallet.js";
 const router = Router();
 
 // Register
@@ -19,6 +20,8 @@ router.post("/register", async (req, res, next) => {
 
     const user = new User({ username, password });
     await user.save();
+    // Create wallet for new user
+    await Wallet.create({ userId: user._id, balance: 5000, locked: 0 });
 
     res.json({ message: "User registered successfully", userId: user._id });
   } catch (err) {
