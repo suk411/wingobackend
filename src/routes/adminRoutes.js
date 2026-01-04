@@ -2,6 +2,7 @@
 import { Router } from "express";
 import redis from "../config/redis.js";
 import Round from "../models/Round.js";
+import Bet from "../models/Bet.js";
 import { selectResult } from "../services/resultEngine.js";
 
 const router = Router();
@@ -78,5 +79,38 @@ router.get("/audit/:roundId", async (req, res) => {
   if (!round) return res.status(404).json({ error: "Round not found" });
   res.json(round);
 });
-
+// ✅ Paginated rounds list
+router.get("/rounds", async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = 10;
+    const skip = (page - 1) * limit;
+    const rounds = await Round.find({})
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+    const total = await Round.countDocuments();
+    const totalPages = Math.ceil(total / limit);
+    res.json({ page, totalPages, totalRounds: total, rounds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}); // ✅ Bet list by userId
+router.get("/bets/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = 10;
+    const skip = (page - 1) * limit;
+    const bets = await Bet.find({ userId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+    const total = await Bet.countDocuments({ userId });
+    const totalPages = Math.ceil(total / limit);
+    res.json({ userId, page, totalPages, totalBets: total, bets });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 export default router;
