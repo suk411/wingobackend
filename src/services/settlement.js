@@ -7,33 +7,42 @@ export async function settleRound(roundId, result) {
   const bets = await Bet.find({ roundId, status: "PENDING" });
 
   for (const bet of bets) {
+    if (!bet.option) {
+      console.warn(`⚠️ Skipping bet with missing option:`, bet);
+      continue;
+    }
+
     const wallet = await Wallet.findOne({ userId: bet.userId });
     if (!wallet) continue;
 
     let payout = 0;
     const netAmount = +(bet.amount * 0.98).toFixed(2);
 
-    if (bet.type === "COLOR") {
-      if (bet.option.toLowerCase() === result.color.toLowerCase()) {
+    // COLOR bets
+    if (bet.type === "COLOR" && typeof bet.option === "string") {
+      const opt = bet.option.toLowerCase();
+      const resColor = result.color.toLowerCase();
+
+      if (opt === resColor) {
         payout = netAmount * 2;
         bet.status = "WON";
-      } else if (
-        result.includesViolet &&
-        (bet.option.toLowerCase() === "red" ||
-          bet.option.toLowerCase() === "green")
-      ) {
+      } else if (result.includesViolet && (opt === "red" || opt === "green")) {
         payout = netAmount * 1.5;
         bet.status = "WON";
       } else {
         bet.status = "LOST";
       }
-    } else if (bet.type === "SIZE") {
+
+      // SIZE bets
+    } else if (bet.type === "SIZE" && typeof bet.option === "string") {
       if (bet.option.toLowerCase() === result.size.toLowerCase()) {
         payout = netAmount * 2;
         bet.status = "WON";
       } else {
         bet.status = "LOST";
       }
+
+      // NUMBER bets
     } else if (bet.type === "NUMBER") {
       if (String(bet.option) === String(result.number)) {
         payout = netAmount * 9;
@@ -41,6 +50,8 @@ export async function settleRound(roundId, result) {
       } else {
         bet.status = "LOST";
       }
+
+      // VIOLET bets
     } else if (bet.type === "VIOLET") {
       if (result.includesViolet) {
         payout = netAmount * 4.5;
@@ -50,6 +61,7 @@ export async function settleRound(roundId, result) {
       }
     }
 
+    // Credit wallet if won
     if (payout > 0) {
       wallet.balance += payout;
       wallet.locked -= bet.amount;
@@ -71,5 +83,6 @@ export async function settleRound(roundId, result) {
     await bet.save();
   }
 
+  // ✅ Update round status and result
   await Round.updateOne({ roundId }, { $set: { status: "SETTLED", result } });
 }
