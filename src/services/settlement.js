@@ -4,7 +4,6 @@ import Bet from "../models/Bet.js";
 import Round from "../models/Round.js";
 
 export async function settleRound(roundId, result) {
-  // result should be an object: { number, color, size }
   const bets = await Bet.find({ roundId, status: "PENDING" });
 
   for (const bet of bets) {
@@ -12,25 +11,24 @@ export async function settleRound(roundId, result) {
     if (!wallet) continue;
 
     let payout = 0;
-    const netAmount = +(bet.amount * 0.98).toFixed(2); // apply fee only at payout
+    const netAmount = +(bet.amount * 0.98).toFixed(2);
 
-    // Apply Wingo rules
     if (bet.type === "COLOR") {
-      if (bet.option.toLowerCase() === result.color) {
+      if (bet.option.toLowerCase() === result.color.toLowerCase()) {
         payout = netAmount * 2;
         bet.status = "WON";
       } else if (
+        result.includesViolet &&
         (bet.option.toLowerCase() === "red" ||
-          bet.option.toLowerCase() === "green") &&
-        result.color === "violet"
+          bet.option.toLowerCase() === "green")
       ) {
-        payout = netAmount * 1.5; // partial win
+        payout = netAmount * 1.5;
         bet.status = "WON";
       } else {
         bet.status = "LOST";
       }
     } else if (bet.type === "SIZE") {
-      if (bet.option.toLowerCase() === result.size) {
+      if (bet.option.toLowerCase() === result.size.toLowerCase()) {
         payout = netAmount * 2;
         bet.status = "WON";
       } else {
@@ -44,7 +42,7 @@ export async function settleRound(roundId, result) {
         bet.status = "LOST";
       }
     } else if (bet.type === "VIOLET") {
-      if (result.color === "violet") {
+      if (result.includesViolet) {
         payout = netAmount * 4.5;
         bet.status = "WON";
       } else {
@@ -52,7 +50,6 @@ export async function settleRound(roundId, result) {
       }
     }
 
-    // Credit wallet if won
     if (payout > 0) {
       wallet.balance += payout;
       wallet.locked -= bet.amount;
@@ -67,7 +64,6 @@ export async function settleRound(roundId, result) {
         meta: { betId: bet._id, result },
       });
     } else {
-      // Lost bet: release locked funds only
       wallet.locked -= bet.amount;
       await wallet.save();
     }
@@ -75,6 +71,5 @@ export async function settleRound(roundId, result) {
     await bet.save();
   }
 
-  // ✅ Update round status in DB
   await Round.updateOne({ roundId }, { $set: { status: "SETTLED", result } });
 }

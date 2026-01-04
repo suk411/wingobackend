@@ -1,4 +1,3 @@
-// src/services/resultEngine.js
 import redis from "../config/redis.js";
 
 export async function selectResult(roundId) {
@@ -9,18 +8,32 @@ export async function selectResult(roundId) {
     `wingo:round:${roundId}:exposure:number`
   );
 
-  // Violet frequency check
   const violetCount =
     Number(await redis.get("wingo:counters:violet:count")) || 0;
   const mode = (await redis.get("wingo:admin:mode")) || "MAX_PROFIT";
 
-  // Build candidate results (0–9)
+  // Explicit mapping for numbers 0–9
   const candidates = [];
   for (let num = 0; num <= 9; num++) {
-    const color = num % 2 === 0 ? "GREEN" : "RED";
+    let color = null;
+    let includesViolet = false;
+
+    if (num === 0) {
+      color = "RED";
+      includesViolet = true;
+    } else if ([1, 3, 7, 9].includes(num)) {
+      color = "GREEN";
+    } else if ([2, 4, 6, 8].includes(num)) {
+      color = "RED";
+    } else if (num === 5) {
+      color = "GREEN";
+      includesViolet = true;
+    }
+
     const size = num <= 4 ? "SMALL" : "BIG";
-    const includesViolet = num === 0 || num === 5;
+
     if (includesViolet && violetCount >= 10) continue; // enforce violet limit
+
     candidates.push({ number: num, color, size, includesViolet });
   }
 
@@ -28,17 +41,17 @@ export async function selectResult(roundId) {
   const payouts = candidates.map((c) => {
     let total = 0;
 
-    // Color
+    // Color bets
     if (colorExp[c.color.toLowerCase()]) {
       total += Number(colorExp[c.color.toLowerCase()]) * 2.0;
     }
 
-    // Size
+    // Size bets
     if (sizeExp[c.size.toLowerCase()]) {
       total += Number(sizeExp[c.size.toLowerCase()]) * 2.0;
     }
 
-    // Number
+    // Number bets
     if (numberExp[String(c.number)]) {
       total += Number(numberExp[String(c.number)]) * 9.0;
     }
@@ -55,7 +68,7 @@ export async function selectResult(roundId) {
     return { candidate: c, payout: +total.toFixed(2) };
   });
 
-  // Select result
+  // Select result based on mode
   let selected;
   if (mode === "MAX_PROFIT") {
     selected = payouts.reduce((min, p) => (p.payout < min.payout ? p : min));
@@ -63,7 +76,7 @@ export async function selectResult(roundId) {
     selected = payouts.reduce((max, p) => (p.payout > max.payout ? p : max));
   }
 
-  // Freeze result
+  // Freeze result in Redis
   const resultKey = `wingo:round:${roundId}:result`;
   const freeze = {
     ...selected.candidate,

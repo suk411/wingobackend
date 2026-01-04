@@ -1,14 +1,11 @@
 import cron from "node-cron";
 import redis from "../config/redis.js";
 import { RoundStatus } from "../constants/enums.js";
-import { createRound, closeRound } from "./round.js"; // new service
-import { settleRound } from "./settlement.js"; // payout logic
-import Round from "../models/Round.js";
+import { createRound, closeRound } from "./round.js";
+import { settleRound } from "./settlement.js";
 
 export function initScheduler(io) {
-  // Run every 30 seconds
   cron.schedule("*/30 * * * * *", async () => {
-    // Acquire lock so only one scheduler runs
     const lock = await redis.set("wingo:locks:scheduler", "1", "NX", "EX", 10);
     if (!lock) return;
 
@@ -18,49 +15,50 @@ export function initScheduler(io) {
     const dd = String(now.getDate()).padStart(2, "0");
     const dateKey = `${yyyy}${mm}${dd}`;
 
-    // Redis counter per day
     const counterKey = `wingo:roundCounter:${dateKey}`;
     const seq = await redis.incr(counterKey);
-    await redis.expire(counterKey, 86400); // expire after 24h
+    await redis.expire(counterKey, 86400);
 
-    // Round ID format: YYYYMMDD00001
     const roundId = `${dateKey}${String(seq).padStart(5, "0")}`;
-
     const startTs = Date.now();
-    const endTs = startTs + 30000; // 30s later
+    const endTs = startTs + 30000;
 
-    // ✅ Store round state in Redis
     await redis.hset(`wingo:round:${roundId}:state`, {
       id: roundId,
       start_ts: startTs,
       end_ts: endTs,
       status: RoundStatus.BETTING,
     });
-
-    // ✅ Pointer to current round for countdown/betting services
     await redis.set("wingo:round:current", `wingo:round:${roundId}:state`);
 
-    // ✅ Persist round in MongoDB
     await createRound(roundId, startTs, endTs);
 
-    // ✅ Broadcast round-start event
     io.emit("round-start", { roundId, endTs });
     console.log("🎯 Round created:", roundId);
 
-    // Schedule round end after 30s
     setTimeout(async () => {
-      // Generate result (example: random number/color/size)
       const number = Math.floor(Math.random() * 10);
-      const color =
-        number === 0 ? "violet" : number % 2 === 0 ? "red" : "green";
-      const size = number >= 5 ? "big" : "small";
-      const result = { number, color, size };
+      let color;
+      let includesViolet = false;
 
-      // ✅ Update round in MongoDB + settle bets
+      if (number === 0) {
+        color = "RED";
+        includesViolet = true;
+      } else if ([1, 3, 7, 9].includes(number)) {
+        color = "GREEN";
+      } else if ([2, 4, 6, 8].includes(number)) {
+        color = "RED";
+      } else if (number === 5) {
+        color = "GREEN";
+        includesViolet = true;
+      }
+
+      const size = number <= 4 ? "SMALL" : "BIG";
+      const result = { number, color, size, includesViolet };
+
       await closeRound(roundId, result);
-      await settleRound(roundId, color); // pass winning color/number/size
+      await settleRound(roundId, result);
 
-      // ✅ Broadcast round-end event
       io.emit("round-end", { roundId, result });
       console.log("✅ Round settled:", roundId, result);
     }, 30000);
