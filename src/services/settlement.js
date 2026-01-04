@@ -4,6 +4,11 @@ import Bet from "../models/Bet.js";
 import Round from "../models/Round.js";
 
 export async function settleRound(roundId, result) {
+  if (!result || typeof result !== "object") {
+    console.error("❌ Invalid result object passed to settleRound:", result);
+    return;
+  }
+
   const bets = await Bet.find({ roundId, status: "PENDING" });
 
   for (const bet of bets) {
@@ -21,7 +26,7 @@ export async function settleRound(roundId, result) {
     // COLOR bets
     if (bet.type === "COLOR" && typeof bet.option === "string") {
       const opt = bet.option.toLowerCase();
-      const resColor = result.color.toLowerCase();
+      const resColor = result.color ? result.color.toLowerCase() : "";
 
       if (opt === resColor) {
         payout = netAmount * 2;
@@ -35,7 +40,10 @@ export async function settleRound(roundId, result) {
 
       // SIZE bets
     } else if (bet.type === "SIZE" && typeof bet.option === "string") {
-      if (bet.option.toLowerCase() === result.size.toLowerCase()) {
+      if (
+        result.size &&
+        bet.option.toLowerCase() === result.size.toLowerCase()
+      ) {
         payout = netAmount * 2;
         bet.status = "WON";
       } else {
@@ -61,7 +69,7 @@ export async function settleRound(roundId, result) {
       }
     }
 
-    // Credit wallet if won
+    // Wallet + Ledger updates
     if (payout > 0) {
       wallet.balance += payout;
       wallet.locked -= bet.amount;
@@ -83,6 +91,5 @@ export async function settleRound(roundId, result) {
     await bet.save();
   }
 
-  // ✅ Update round status and result
   await Round.updateOne({ roundId }, { $set: { status: "SETTLED", result } });
 }

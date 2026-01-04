@@ -56,6 +56,7 @@ export function initScheduler(io) {
       const size = number <= 4 ? "SMALL" : "BIG";
       const result = { number, color, size, includesViolet };
 
+      // ✅ Always pass full result object
       await closeRound(roundId, result);
       await settleRound(roundId, result);
 
