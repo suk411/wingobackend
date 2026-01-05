@@ -10,7 +10,8 @@ export async function selectResult(roundId) {
 
   const violetCount =
     Number(await redis.get("wingo:counters:violet:count")) || 0;
-  const mode = (await redis.get("wingo:admin:mode")) || "MAX_PROFIT";
+  const modeRaw = await redis.get("wingo:admin:mode");
+  const mode = modeRaw ? modeRaw.toUpperCase().trim() : "MAX_PROFIT";
 
   // Explicit mapping for numbers 0–9
   const candidates = [];

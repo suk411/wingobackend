@@ -35,13 +35,17 @@ router.post("/force-result", async (req, res) => {
 
 // Toggle admin mode
 router.post("/mode", async (req, res) => {
-  const { mode } = req.body;
+  let { mode } = req.body;
+  mode = mode.toUpperCase().trim();   // ✅ normalize
+
   if (!["MAX_PROFIT", "MAX_LOSS"].includes(mode)) {
     return res.status(400).json({ error: "Invalid mode" });
   }
+
   await redis.set("wingo:admin:mode", mode);
   res.json({ mode });
 });
+
 
 // Get current mode
 router.get("/mode", async (req, res) => {
