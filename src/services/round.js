@@ -1,5 +1,4 @@
 import Round from "../models/Round.js";
-import { settleRound } from "./settlement.js"; // payout logic we wrote earlier
 
 // Save round start in MongoDB
 export async function createRound(roundId, startTs, endTs) {
@@ -12,19 +11,14 @@ export async function createRound(roundId, startTs, endTs) {
   return round;
 }
 
-// Close round and generate result
+// Remove closeRound auto-settlement; rely on resultReveal + settlement orchestrations.
+// If you still need a closeRound helper, keep it minimal and DO NOT settle here.
 export async function closeRound(roundId, result) {
   const round = await Round.findOne({ roundId });
   if (!round) throw new Error("Round not found");
 
   round.status = "REVEALED";
   round.result = result;
-  await round.save();
-
-  // Settle bets
-  await settleRound(roundId, result);
-
-  round.status = "SETTLED";
   await round.save();
 
   return round;

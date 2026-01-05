@@ -1,7 +1,7 @@
 import redis from "../config/redis.js";
 
 export async function selectResult(roundId) {
-  // Respect forced result
+  // ✅ Respect forced result immediately
   const forcedFlag = await redis.get(`wingo:round:${roundId}:forced`);
   if (forcedFlag) {
     const forcedResult = await redis.get(`wingo:round:${roundId}:result`);

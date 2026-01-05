@@ -1,4 +1,3 @@
-// src/services/resultReveal.js
 import redis from "../config/redis.js";
 
 export function initResultReveal(io) {
@@ -9,18 +8,17 @@ export function initResultReveal(io) {
     const state = await redis.hgetall(currentKey);
     if (!state?.end_ts || !state.id) return;
 
+    const roundId = state.id;
     const remainingMs = Number(state.end_ts) - Date.now();
 
-    // Reveal only when countdown hits 0
+    // Reveal only when countdown hits 0 and status is CLOSED or FORCED
     if (
       remainingMs <= 0 &&
       (state.status === "CLOSED" || state.status === "FORCED")
     ) {
-      const roundId = state.id;
-
-      // Prefer forced result if present
-      const forcedFlag = await redis.get(`wingo:round:${roundId}:forced`);
       const resultKey = `wingo:round:${roundId}:result`;
+      const forcedFlagKey = `wingo:round:${roundId}:forced`;
+
       const resultJson = await redis.get(resultKey);
       if (!resultJson) return; // nothing frozen yet
 
@@ -31,8 +29,9 @@ export function initResultReveal(io) {
 
       // Update status to REVEALED and clear forced flag
       await redis.hset(currentKey, "status", "REVEALED");
+      const forcedFlag = await redis.get(forcedFlagKey);
       if (forcedFlag) {
-        await redis.del(`wingo:round:${roundId}:forced`);
+        await redis.del(forcedFlagKey);
       }
 
       console.log("🎉 Result revealed:", roundId, resultJson);

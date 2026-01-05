@@ -1,8 +1,8 @@
 import cron from "node-cron";
 import redis from "../config/redis.js";
 import { RoundStatus } from "../constants/enums.js";
-import { createRound, closeRound } from "./round.js";
-import { settleRound } from "./settlement.js";
+import { createRound } from "./round.js";
+import { selectResult } from "./resultEngine.js"; // use engine for non-forced rounds
 
 export function initScheduler(io) {
   cron.schedule("*/30 * * * * *", async () => {
@@ -23,45 +23,60 @@ export function initScheduler(io) {
     const startTs = Date.now();
     const endTs = startTs + 30000;
 
-    await redis.hset(`wingo:round:${roundId}:state`, {
+    // Initialize state
+    const stateKey = `wingo:round:${roundId}:state`;
+    await redis.hset(stateKey, {
       id: roundId,
       start_ts: startTs,
       end_ts: endTs,
       status: RoundStatus.BETTING,
     });
-    await redis.set("wingo:round:current", `wingo:round:${roundId}:state`);
+    await redis.set("wingo:round:current", stateKey);
 
+    // Persist in Mongo
     await createRound(roundId, startTs, endTs);
 
     io.emit("round-start", { roundId, endTs });
     console.log("🎯 Round created:", roundId);
 
+    // Guarded close logic at end of round:
     setTimeout(async () => {
-      const number = Math.floor(Math.random() * 10);
-      let color;
-      let includesViolet = false;
+      // Set CLOSED; result will be revealed by resultReveal when end_ts passes
+      const lockClose = await redis.set(
+        `wingo:locks:auto-close:${roundId}`,
+        "1",
+        "NX",
+        "EX",
+        10
+      );
+      if (!lockClose) return;
 
-      if (number === 0) {
-        color = "RED";
-        includesViolet = true;
-      } else if ([1, 3, 7, 9].includes(number)) {
-        color = "GREEN";
-      } else if ([2, 4, 6, 8].includes(number)) {
-        color = "RED";
-      } else if (number === 5) {
-        color = "GREEN";
-        includesViolet = true;
+      const currentKey = await redis.get("wingo:round:current");
+      if (currentKey) {
+        const state = await redis.hgetall(currentKey);
+        if (state?.id === roundId) {
+          await redis.hset(currentKey, "status", RoundStatus.CLOSED);
+          io.emit("bet-closed", { roundId });
+        }
       }
 
-      const size = number <= 4 ? "SMALL" : "BIG";
-      const result = { number, color, size, includesViolet };
+      // If admin forced, DO NOT compute; ensure result exists
+      const forced = await redis.get(`wingo:round:${roundId}:forced`);
+      if (forced) {
+        const forcedJson = await redis.get(`wingo:round:${roundId}:result`);
+        if (!forcedJson) {
+          console.warn(
+            `⚠️ Forced flag present but no result frozen for ${roundId}`
+          );
+        }
+        // Let resultReveal handle emit and status → REVEALED
+        return;
+      }
 
-      // ✅ Always pass full result object
-      await closeRound(roundId, result);
-      await settleRound(roundId, result);
+      // Normal case: compute and freeze via engine, do not emit or settle here
+      await selectResult(roundId);
 
-      io.emit("round-end", { roundId, result });
-      console.log("✅ Round settled:", roundId, result);
+      // Result will be revealed by resultReveal after countdown hits zero.
     }, 30000);
   });
 }
