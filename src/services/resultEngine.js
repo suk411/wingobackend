@@ -1,6 +1,16 @@
 import redis from "../config/redis.js";
 
 export async function selectResult(roundId) {
+  // Respect forced result
+  const forcedFlag = await redis.get(`wingo:round:${roundId}:forced`);
+  if (forcedFlag) {
+    const forcedResult = await redis.get(`wingo:round:${roundId}:result`);
+    if (forcedResult) {
+      console.log("⚠️ Admin forced result detected → using as final result");
+      return JSON.parse(forcedResult);
+    }
+  }
+
   // 1) Read exposures
   const colorExp =
     (await redis.hgetall(`wingo:round:${roundId}:exposure:color`)) || {};
@@ -115,17 +125,19 @@ export async function selectResult(roundId) {
 
   // 9) Update counters
   await redis.incr("wingo:counters:rounds:count");
-  if (selected.candidate.includesViolet)
+  if (selected.candidate.includesViolet) {
     await redis.incr("wingo:counters:violet:count");
+  }
 
-  // 10) Freeze
+  // 10) Freeze result (overwrite allowed)
   const resultKey = `wingo:round:${roundId}:result`;
   const freeze = {
     ...selected.candidate,
     payout: selected.payout,
     freeze_ts: Date.now(),
+    forced: false,
   };
-  await redis.set(resultKey, JSON.stringify(freeze), "NX");
+  await redis.set(resultKey, JSON.stringify(freeze));
 
   console.log(`🎯 Mode=${mode} → Selected:`, freeze);
   return freeze;

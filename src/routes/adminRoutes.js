@@ -8,34 +8,60 @@ import { selectResult } from "../services/resultEngine.js";
 const router = Router();
 
 // Force result manually
+// Force result manually (only for active round)
 router.post("/force-result", async (req, res) => {
-  const { roundId, number } = req.body;
-  if (!roundId || number === undefined) {
-    return res.status(400).json({ error: "Invalid payload" });
+  try {
+    const { roundId, number } = req.body;
+    if (!roundId || number === undefined) {
+      return res.status(400).json({ error: "Invalid payload" });
+    }
+
+    // Check active round
+    const currentKey = await redis.get("wingo:round:current");
+    if (!currentKey) {
+      return res.status(400).json({ error: "No active round" });
+    }
+    const activeRoundId = currentKey.split(":")[2];
+    if (roundId !== activeRoundId) {
+      return res.status(400).json({
+        error: "Can only force result for active round",
+        activeRoundId
+      });
+    }
+
+    // Derive attributes
+    const color = number % 2 === 0 ? "GREEN" : "RED";
+    const size = number <= 4 ? "SMALL" : "BIG";
+    const includesViolet = number === 0 || number === 5;
+
+    const result = {
+      number,
+      color,
+      size,
+      includesViolet,
+      payout: 0,
+      freeze_ts: Date.now(),
+      forced: true
+    };
+
+    // ✅ Freeze in Redis and mark as forced
+    await redis.set(`wingo:round:${roundId}:result`, JSON.stringify(result));
+    await redis.set(`wingo:round:${roundId}:forced`, "true"); // flag checked in selectResult
+    await redis.hset(`wingo:round:${roundId}:state`, "status", "FORCED");
+
+    // ✅ Persist in Mongo for audit trail
+    await Round.updateOne(
+      { roundId },
+      { $set: { result, status: "FORCED" } },
+      { upsert: true }
+    );
+
+    res.json({ roundId, result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-
-  const color = number % 2 === 0 ? "GREEN" : "RED";
-  const size = number <= 4 ? "SMALL" : "BIG";
-  const includesViolet = number === 0 || number === 5;
-
-  const result = {
-    number,
-    color,
-    size,
-    includesViolet,
-    payout: 0,
-    freeze_ts: Date.now(),
-  };
-
-  await redis.set(
-    `wingo:round:${roundId}:result`,
-    JSON.stringify(result),
-    "NX"
-  );
-  await redis.hset(`wingo:round:${roundId}:state`, "status", "REVEALED");
-
-  res.json({ roundId, result });
 });
+
 
 // ✅ Toggle admin mode (MAX_PROFIT / MAX_LOSS)
 router.post("/mode", async (req, res) => {
