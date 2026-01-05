@@ -1,19 +1,39 @@
 import redis from "../config/redis.js";
 
 export async function selectResult(roundId) {
-  // Read exposures
-  const colorExp = await redis.hgetall(`wingo:round:${roundId}:exposure:color`);
-  const sizeExp = await redis.hgetall(`wingo:round:${roundId}:exposure:size`);
-  const numberExp = await redis.hgetall(
-    `wingo:round:${roundId}:exposure:number`
-  );
+  // 1) Read exposures
+  const colorExp =
+    (await redis.hgetall(`wingo:round:${roundId}:exposure:color`)) || {};
+  const sizeExp =
+    (await redis.hgetall(`wingo:round:${roundId}:exposure:size`)) || {};
+  const numberExp =
+    (await redis.hgetall(`wingo:round:${roundId}:exposure:number`)) || {};
 
-  const violetCount =
-    Number(await redis.get("wingo:counters:violet:count")) || 0;
+  const toNum = (v) => Number(v || 0);
+
+  const totalRed = toNum(colorExp.red);
+  const totalGreen = toNum(colorExp.green);
+  const totalViolet = toNum(colorExp.violet);
+  const totalSmall = toNum(sizeExp.small);
+  const totalBig = toNum(sizeExp.big);
+
+  const numbersTotal = Array.from({ length: 10 }, (_, n) =>
+    toNum(numberExp[String(n)])
+  );
+  const totalNumberBets = numbersTotal.reduce((a, b) => a + b, 0);
+
+  // 2) Mode
   const modeRaw = await redis.get("wingo:admin:mode");
   const mode = modeRaw ? modeRaw.toUpperCase().trim() : "MAX_PROFIT";
 
-  // Explicit mapping for numbers 0–9
+  // 3) Violet ratio
+  const violetCount =
+    Number(await redis.get("wingo:counters:violet:count")) || 0;
+  const totalRounds =
+    Number(await redis.get("wingo:counters:rounds:count")) || 1;
+  const violetRatio = violetCount / totalRounds;
+
+  // 4) Build candidates
   const candidates = [];
   for (let num = 0; num <= 9; num++) {
     let color = null;
@@ -32,52 +52,73 @@ export async function selectResult(roundId) {
     }
 
     const size = num <= 4 ? "SMALL" : "BIG";
-
-    if (includesViolet && violetCount >= 10) continue; // enforce violet limit
-
     candidates.push({ number: num, color, size, includesViolet });
   }
 
-  // Calculate payouts per candidate
-  const payouts = candidates.map((c) => {
+  // 5) Compute payout
+  const computePayout = (c) => {
     let total = 0;
-
-    // Color bets
-    if (colorExp[c.color.toLowerCase()]) {
-      total += Number(colorExp[c.color.toLowerCase()]) * 2.0;
-    }
-
-    // Size bets
-    if (sizeExp[c.size.toLowerCase()]) {
-      total += Number(sizeExp[c.size.toLowerCase()]) * 2.0;
-    }
-
-    // Number bets
-    if (numberExp[String(c.number)]) {
-      total += Number(numberExp[String(c.number)]) * 9.0;
-    }
-
-    // Violet adjuncts
+    if (c.color === "RED") total += totalRed * 2.0;
+    if (c.color === "GREEN") total += totalGreen * 2.0;
+    if (c.size === "SMALL") total += totalSmall * 2.0;
+    if (c.size === "BIG") total += totalBig * 2.0;
+    total += toNum(numberExp[String(c.number)]) * 9.0;
     if (c.includesViolet) {
-      if (colorExp["violet"]) total += Number(colorExp["violet"]) * 4.5;
-      if (c.color === "RED" && colorExp["red"])
-        total += Number(colorExp["red"]) * 1.5;
-      if (c.color === "GREEN" && colorExp["green"])
-        total += Number(colorExp["green"]) * 1.5;
+      total += totalViolet * 4.5;
+      if (c.color === "RED") total += totalRed * 1.5;
+      if (c.color === "GREEN") total += totalGreen * 1.5;
     }
+    return +total.toFixed(2);
+  };
 
-    return { candidate: c, payout: +total.toFixed(2) };
-  });
+  const withPayouts = candidates.map((c) => ({
+    candidate: c,
+    payout: computePayout(c),
+  }));
 
-  // Select result based on mode
-  let selected;
-  if (mode === "MAX_PROFIT") {
-    selected = payouts.reduce((min, p) => (p.payout < min.payout ? p : min));
-  } else {
-    selected = payouts.reduce((max, p) => (p.payout > max.payout ? p : max));
+  // 6) Violet guardrails
+  const redGreenBoostAtViolet = (totalRed + totalGreen) * 1.5;
+  const minNonVioletPayout = Math.min(
+    ...withPayouts
+      .filter((p) => !p.candidate.includesViolet)
+      .map((p) => p.payout)
+  );
+  const preferViolet =
+    violetRatio >= 0.1 &&
+    violetRatio <= 0.5 &&
+    redGreenBoostAtViolet < minNonVioletPayout;
+
+  let filtered = withPayouts.slice();
+  if (mode === "MAX_PROFIT" && !preferViolet) {
+    filtered = filtered.filter((p) => !p.candidate.includesViolet);
+  }
+  if (mode === "MAX_LOSS" && violetRatio > 0.5) {
+    filtered = filtered.filter((p) => !p.candidate.includesViolet);
   }
 
-  // Freeze result in Redis
+  // 7) Number guardrails
+  const lowNumberThreshold = Math.max(10, totalNumberBets * 0.05);
+  filtered = filtered.filter((p) => {
+    const numExposure = toNum(numberExp[String(p.candidate.number)]);
+    if (mode === "MAX_LOSS") return true;
+    return numExposure <= lowNumberThreshold;
+  });
+  if (filtered.length === 0) filtered = withPayouts.slice();
+
+  // 8) Select result
+  let selected;
+  if (mode === "MAX_PROFIT") {
+    selected = filtered.reduce((min, p) => (p.payout < min.payout ? p : min));
+  } else {
+    selected = filtered.reduce((max, p) => (p.payout > max.payout ? p : max));
+  }
+
+  // 9) Update counters
+  await redis.incr("wingo:counters:rounds:count");
+  if (selected.candidate.includesViolet)
+    await redis.incr("wingo:counters:violet:count");
+
+  // 10) Freeze
   const resultKey = `wingo:round:${roundId}:result`;
   const freeze = {
     ...selected.candidate,
@@ -86,6 +127,6 @@ export async function selectResult(roundId) {
   };
   await redis.set(resultKey, JSON.stringify(freeze), "NX");
 
-  console.log("✅ Result frozen:", freeze);
+  console.log(`🎯 Mode=${mode} → Selected:`, freeze);
   return freeze;
 }
