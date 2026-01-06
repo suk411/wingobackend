@@ -7,7 +7,6 @@ import { selectResult } from "../services/resultEngine.js";
 
 const router = Router();
 
-// Force result manually
 // Force result manually (only for active round)
 router.post("/force-result", async (req, res) => {
   try {
@@ -16,7 +15,6 @@ router.post("/force-result", async (req, res) => {
       return res.status(400).json({ error: "Invalid payload" });
     }
 
-    // Check active round
     const currentKey = await redis.get("wingo:round:current");
     if (!currentKey) {
       return res.status(400).json({ error: "No active round" });
@@ -25,14 +23,26 @@ router.post("/force-result", async (req, res) => {
     if (roundId !== activeRoundId) {
       return res.status(400).json({
         error: "Can only force result for active round",
-        activeRoundId
+        activeRoundId,
       });
     }
 
-    // Derive attributes
-    const color = number % 2 === 0 ? "GREEN" : "RED";
+    // Use same canonical mapping as engine
+    let color = "RED";
+    let includesViolet = false;
+    if (number === 0) {
+      color = "RED";
+      includesViolet = true;
+    } else if ([1, 3, 7, 9].includes(number)) {
+      color = "GREEN";
+    } else if ([2, 4, 6, 8].includes(number)) {
+      color = "RED";
+    } else if (number === 5) {
+      color = "GREEN";
+      includesViolet = true;
+    }
+
     const size = number <= 4 ? "SMALL" : "BIG";
-    const includesViolet = number === 0 || number === 5;
 
     const result = {
       number,
@@ -41,15 +51,13 @@ router.post("/force-result", async (req, res) => {
       includesViolet,
       payout: 0,
       freeze_ts: Date.now(),
-      forced: true
+      forced: true,
     };
 
-    // ✅ Freeze in Redis and mark as forced
     await redis.set(`wingo:round:${roundId}:result`, JSON.stringify(result));
-    await redis.set(`wingo:round:${roundId}:forced`, "true"); // flag checked in selectResult
+    await redis.set(`wingo:round:${roundId}:forced`, "true");
     await redis.hset(`wingo:round:${roundId}:state`, "status", "FORCED");
 
-    // ✅ Persist in Mongo for audit trail
     await Round.updateOne(
       { roundId },
       { $set: { result, status: "FORCED" } },
@@ -62,16 +70,13 @@ router.post("/force-result", async (req, res) => {
   }
 });
 
-
-// ✅ Toggle admin mode (MAX_PROFIT / MAX_LOSS)
+// Toggle admin mode (MAX_PROFIT / MAX_LOSS)
 router.post("/mode", async (req, res) => {
   let { mode } = req.body;
-  mode = mode.toUpperCase().trim(); // normalize input
-
+  mode = mode.toUpperCase().trim();
   if (!["MAX_PROFIT", "MAX_LOSS"].includes(mode)) {
     return res.status(400).json({ error: "Invalid mode" });
   }
-
   await redis.set("wingo:admin:mode", mode);
   res.json({ mode });
 });
@@ -90,6 +95,7 @@ router.get("/dashboard", async (req, res) => {
   const mode = await redis.get("wingo:admin:mode");
   res.json({ state, violetCount, mode });
 });
+
 // Current round snapshot with details
 router.get("/round/current", async (req, res) => {
   try {
@@ -101,34 +107,25 @@ router.get("/round/current", async (req, res) => {
     const state = await redis.hgetall(currentKey);
     const roundId = currentKey.split(":")[2];
 
-    // Fetch bets for this round
     const bets = await Bet.find({ roundId });
-
-    // Total bet amount
     const totalBets = bets.reduce((sum, b) => sum + b.amount, 0);
 
-    // Breakdown by color
     const betsByColor = bets.reduce((acc, b) => {
       if (b.type === "COLOR") {
-        acc[b.option.toUpperCase()] =
-          (acc[b.option.toUpperCase()] || 0) + b.amount;
-      }
-      if (b.type === "VIOLET") {
-        acc["VIOLET"] = (acc["VIOLET"] || 0) + b.amount;
+        acc[String(b.option).toUpperCase()] =
+          (acc[String(b.option).toUpperCase()] || 0) + b.amount;
       }
       return acc;
     }, {});
 
-    // Breakdown by size
     const betsBySize = bets.reduce((acc, b) => {
       if (b.type === "SIZE") {
-        acc[b.option.toUpperCase()] =
-          (acc[b.option.toUpperCase()] || 0) + b.amount;
+        acc[String(b.option).toUpperCase()] =
+          (acc[String(b.option).toUpperCase()] || 0) + b.amount;
       }
       return acc;
     }, {});
 
-    // Breakdown by number
     const betsByNumber = bets.reduce((acc, b) => {
       if (b.type === "NUMBER") {
         acc[b.option] = (acc[b.option] || 0) + b.amount;
@@ -136,7 +133,6 @@ router.get("/round/current", async (req, res) => {
       return acc;
     }, {});
 
-    // Fetch result if already revealed
     const roundDoc = await Round.findOne({ roundId });
     const result = roundDoc ? roundDoc.result : null;
 
@@ -152,13 +148,6 @@ router.get("/round/current", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// Audit trail for a round
-router.get("/audit/:roundId", async (req, res) => {
-  const round = await Round.findOne({ roundId: req.params.roundId });
-  if (!round) return res.status(404).json({ error: "Round not found" });
-  res.json(round);
 });
 
 // Paginated rounds list with totals
