@@ -5,7 +5,6 @@ import { createRound } from "./round.js";
 import { selectResult } from "./resultEngine.js";
 import { settleRound } from "./settlement.js";
 import Round from "../models/Round.js";
-import Bet from "../models/Bet.js";
 
 export function initScheduler(io) {
   // Create a new round every 30s
@@ -27,7 +26,7 @@ export function initScheduler(io) {
     const startTs = Date.now();
     const endTs = startTs + 30000;
 
-    // Initialize state in Redis
+    // Initialize state
     const stateKey = `wingo:round:${roundId}:state`;
     await redis.hset(stateKey, {
       id: roundId,
@@ -37,13 +36,12 @@ export function initScheduler(io) {
     });
     await redis.set("wingo:round:current", stateKey);
 
-    // Persist in Mongo
     await createRound(roundId, startTs, endTs);
 
     io.emit("round-start", { roundId, endTs });
-    console.log("🎯 Round created:", roundId);
+    console.log(`🚀 Round started: ${roundId}`);
 
-    // Close betting and freeze result after 30s
+    // At T‑25s (5s before end), close betting and freeze result
     setTimeout(async () => {
       const lockClose = await redis.set(
         `wingo:locks:auto-close:${roundId}`,
@@ -60,62 +58,52 @@ export function initScheduler(io) {
         if (state?.id === roundId) {
           await redis.hset(currentKey, "status", RoundStatus.CLOSED);
           io.emit("bet-closed", { roundId });
-          console.log(`🔒 Round ${roundId} closed`);
+          console.log(`🔒 Round closed: ${roundId}`);
         }
       }
 
-      // If admin forced, skip compute
+      // If forced, skip compute
       const forced = await redis.get(`wingo:round:${roundId}:forced`);
       if (forced) {
-        const forcedJson = await redis.get(`wingo:round:${roundId}:result`);
-        if (!forcedJson) {
-          console.warn(
-            `⚠️ Forced flag present but no result frozen for ${roundId}`
-          );
-        }
+        console.log(
+          `⚠️ Round ${roundId} forced by admin, skipping auto compute`
+        );
         return;
       }
 
-      // Normal case: compute and freeze result
+      // Compute and freeze result according to mode
       const result = await selectResult(roundId);
-      if (!result) {
-        console.error(`❌ Failed to freeze result for ${roundId}`);
+      if (result) {
+        console.log(`🧊 Result frozen at T‑5s for ${roundId}:`, result);
       } else {
-        console.log(`🧊 Result frozen for ${roundId}:`, result);
+        console.error(`❌ Failed to freeze result for ${roundId}`);
       }
-      // Reveal + settlement handled by resultReveal
-    }, 30000);
-  });
+    }, 25000); // 25s after start → 5s before end
 
-  // ✅ Guard sweep every minute: settle any stuck rounds
-  cron.schedule("*/1 * * * *", async () => {
-    const stuckRounds = await Round.find({
-      status: { $in: ["CLOSED", "REVEALED"] },
-    });
-    for (const r of stuckRounds) {
-      const pendingBets = await Bet.countDocuments({
-        roundId: r.roundId,
-        status: "PENDING",
-      });
-      if (pendingBets === 0) continue;
-
-      const resultJson = await redis.get(`wingo:round:${r.roundId}:result`);
+    // At T=30s, reveal and settle
+    setTimeout(async () => {
+      const resultJson = await redis.get(`wingo:round:${roundId}:result`);
       if (!resultJson) {
-        console.warn(`⚠️ Guard: no result frozen for ${r.roundId}`);
-        continue;
+        console.error(`❌ No result found at reveal for ${roundId}`);
+        return;
       }
       const result = JSON.parse(resultJson);
 
+      io.emit("result-reveal", { roundId, result });
+      await redis.hset(stateKey, "status", RoundStatus.REVEALED);
+      await Round.updateOne(
+        { roundId },
+        { $set: { status: "REVEALED", result } }
+      );
+      console.log(`🎉 Result revealed: ${roundId}`, result);
+
       try {
-        await settleRound(r.roundId, result);
-        await Round.updateOne(
-          { roundId: r.roundId },
-          { $set: { status: "SETTLED" } }
-        );
-        console.log(`✅ Guard settled round ${r.roundId}`);
+        await settleRound(roundId, result);
+        await Round.updateOne({ roundId }, { $set: { status: "SETTLED" } });
+        console.log(`✅ Round settled: ${roundId}`);
       } catch (err) {
-        console.error(`❌ Guard failed to settle round ${r.roundId}:`, err);
+        console.error(`❌ Settlement failed for ${roundId}:`, err);
       }
-    }
+    }, 30000);
   });
 }
