@@ -18,7 +18,6 @@ export function initResultReveal(io) {
       remainingMs <= 0 &&
       (state.status === "CLOSED" || state.status === "FORCED")
     ) {
-      // Single-execution lock for reveal
       const revealLock = await redis.set(
         `wingo:locks:reveal:${roundId}`,
         "1",
@@ -28,30 +27,16 @@ export function initResultReveal(io) {
       );
       if (!revealLock) return;
 
-      // Ensure result exists: if missing, compute now
-      const resultKey = `wingo:round:${roundId}:result`;
-      let resultJson = await redis.get(resultKey);
+      // Ensure result exists
+      let resultJson = await redis.get(`wingo:round:${roundId}:result`);
       if (!resultJson) {
-        console.warn(
-          `⚠️ Reveal: no frozen result for ${roundId} → computing via engine`
-        );
+        console.warn(`⚠️ No frozen result for ${roundId}, computing now`);
         const computed = await selectResult(roundId);
-        if (!computed) {
-          console.error(`❌ Reveal: selectResult failed for ${roundId}`);
-          return;
-        }
-        resultJson = await redis.get(resultKey);
-        if (!resultJson) {
-          console.error(
-            `❌ Reveal: result still missing after compute for ${roundId}`
-          );
-          return;
-        }
+        resultJson = JSON.stringify(computed);
       }
-
       const result = JSON.parse(resultJson);
 
-      // Emit final reveal
+      // Emit reveal
       io.emit("result-reveal", { roundId, result });
 
       // Update statuses
@@ -64,14 +49,14 @@ export function initResultReveal(io) {
 
       console.log("🎉 Result revealed:", roundId, result);
 
-      // Immediately settle and finalize round
+      // ✅ Settle immediately
       try {
         await settleRound(roundId, result);
         await Round.updateOne({ roundId }, { $set: { status: "SETTLED" } });
         console.log("✅ Round settled:", roundId);
       } catch (err) {
         console.error("❌ Settlement failed:", err);
-        // Retry once after 2 seconds
+        // Retry once
         setTimeout(async () => {
           try {
             await settleRound(roundId, result);

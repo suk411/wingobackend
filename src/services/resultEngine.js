@@ -43,7 +43,7 @@ export async function selectResult(roundId) {
     Number(await redis.get("wingo:counters:rounds:count")) || 1;
   const violetRatio = violetCount / totalRounds;
 
-  // 4) Build candidates (explicit mapping)
+  // 4) Build candidates
   const candidates = [];
   for (let num = 0; num <= 9; num++) {
     let color = null;
@@ -65,7 +65,7 @@ export async function selectResult(roundId) {
     candidates.push({ number: num, color, size, includesViolet });
   }
 
-  // 5) Compute payout for each candidate
+  // 5) Compute payout
   const computePayout = (c) => {
     let total = 0;
     if (c.color === "RED") total += totalRed * 2.0;
@@ -129,7 +129,7 @@ export async function selectResult(roundId) {
     await redis.incr("wingo:counters:violet:count");
   }
 
-  // 10) Freeze result — overwrite allowed, then verify
+  // 10) Freeze result (overwrite allowed)
   const resultKey = `wingo:round:${roundId}:result`;
   const freeze = {
     ...selected.candidate,
@@ -137,12 +137,7 @@ export async function selectResult(roundId) {
     freeze_ts: Date.now(),
     forced: false,
   };
-  await redis.set(resultKey, JSON.stringify(freeze)); // removed "NX"
-  const verify = await redis.get(resultKey);
-  if (!verify) {
-    console.error(`❌ selectResult: freeze failed for round ${roundId}`);
-    return null;
-  }
+  await redis.set(resultKey, JSON.stringify(freeze)); // ✅ overwrite always
 
   console.log(`🎯 Mode=${mode} → Selected:`, freeze);
   return freeze;
