@@ -36,17 +36,15 @@ export async function selectResult(roundId) {
   const modeRaw = await redis.get("wingo:admin:mode");
   const mode = modeRaw ? modeRaw.toUpperCase().trim() : "MAX_PROFIT";
 
-  // 3) Violet ratio
-  const violetCount =
-    Number(await redis.get("wingo:counters:violet:count")) || 0;
-  const totalRounds =
-    Number(await redis.get("wingo:counters:rounds:count")) || 1;
-  const violetRatio = violetCount / totalRounds;
+  // 3) Violet rolling window (strict cap 10/100)
+  const violetWindowKey = "wingo:stats:violet:last100";
+  const arr = await redis.lrange(violetWindowKey, 0, -1);
+  const violetCountLast100 = arr.reduce((sum, v) => sum + (Number(v) || 0), 0);
 
   // 4) Build candidates
   const candidates = [];
   for (let num = 0; num <= 9; num++) {
-    let color = null;
+    let color = "RED";
     let includesViolet = false;
 
     if (num === 0) {
@@ -62,6 +60,10 @@ export async function selectResult(roundId) {
     }
 
     const size = num <= 4 ? "SMALL" : "BIG";
+
+    // Enforce violet cap
+    if (includesViolet && violetCountLast100 >= 10) continue;
+
     candidates.push({ number: num, color, size, includesViolet });
   }
 
@@ -86,50 +88,46 @@ export async function selectResult(roundId) {
     payout: computePayout(c),
   }));
 
-  // 6) Violet guardrails
-  const redGreenBoostAtViolet = (totalRed + totalGreen) * 1.5;
-  const minNonVioletPayout = Math.min(
-    ...withPayouts
-      .filter((p) => !p.candidate.includesViolet)
-      .map((p) => p.payout)
-  );
-  const preferViolet =
-    violetRatio >= 0.1 &&
-    violetRatio <= 0.5 &&
-    redGreenBoostAtViolet < minNonVioletPayout;
-
-  let filtered = withPayouts.slice();
-  if (mode === "MAX_PROFIT" && !preferViolet) {
-    filtered = filtered.filter((p) => !p.candidate.includesViolet);
-  }
-  if (mode === "MAX_LOSS" && violetRatio > 0.5) {
-    filtered = filtered.filter((p) => !p.candidate.includesViolet);
-  }
-
-  // 7) Number guardrails
-  const lowNumberThreshold = Math.max(10, totalNumberBets * 0.05);
-  filtered = filtered.filter((p) => {
-    const numExposure = toNum(numberExp[String(p.candidate.number)]);
-    if (mode === "MAX_LOSS") return true;
-    return numExposure <= lowNumberThreshold;
-  });
-  if (filtered.length === 0) filtered = withPayouts.slice();
-
-  // 8) Select result
   let selected;
-  if (mode === "MAX_PROFIT") {
-    selected = filtered.reduce((min, p) => (p.payout < min.payout ? p : min));
+
+  // ✅ If no bets at all → random candidate
+  if (
+    totalNumberBets +
+      totalRed +
+      totalGreen +
+      totalViolet +
+      totalSmall +
+      totalBig ===
+    0
+  ) {
+    selected = withPayouts[Math.floor(Math.random() * withPayouts.length)];
+    console.log(`🎲 No bets → random result chosen:`, selected);
   } else {
-    selected = filtered.reduce((max, p) => (p.payout > max.payout ? p : max));
+    // Normal selection by mode
+    if (mode === "MAX_PROFIT") {
+      selected = withPayouts.reduce((min, p) =>
+        p.payout < min.payout ? p : min
+      );
+    } else {
+      selected = withPayouts.reduce((max, p) =>
+        p.payout > max.payout ? p : max
+      );
+    }
+    console.log(`🎯 Mode=${mode} → Selected:`, selected);
   }
 
-  // 9) Update counters
+  // 6) Update counters
   await redis.incr("wingo:counters:rounds:count");
+  await redis.lpush(
+    violetWindowKey,
+    selected.candidate.includesViolet ? "1" : "0"
+  );
+  await redis.ltrim(violetWindowKey, 0, 99);
   if (selected.candidate.includesViolet) {
     await redis.incr("wingo:counters:violet:count");
   }
 
-  // 10) Freeze result (overwrite allowed)
+  // 7) Freeze result
   const resultKey = `wingo:round:${roundId}:result`;
   const freeze = {
     ...selected.candidate,
@@ -137,8 +135,7 @@ export async function selectResult(roundId) {
     freeze_ts: Date.now(),
     forced: false,
   };
-  await redis.set(resultKey, JSON.stringify(freeze)); // ✅ overwrite always
+  await redis.set(resultKey, JSON.stringify(freeze));
 
-  console.log(`🎯 Mode=${mode} → Selected:`, freeze);
   return freeze;
 }
